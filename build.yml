@@ -1,0 +1,1219 @@
+# MI LAUNCHER GAMER - TODO EN UNO (con icono y sonido de inicio)
+# Sube SOLO este archivo a tu repositorio de GitHub en la ruta:
+#   .github/workflows/build.yml
+# Luego ve a Actions > "Compilar Mi Launcher (todo en uno)" > Run workflow.
+name: Compilar Mi Launcher (todo en uno)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Crear proyecto completo
+        run: |
+          set -e
+          mkdir -p app app/src/main app/src/main/java/com/mylauncher/gamer app/src/main/res/drawable app/src/main/res/drawable-nodpi app/src/main/res/layout app/src/main/res/mipmap-anydpi-v26 app/src/main/res/raw app/src/main/res/values app/src/main/res/values-v28 gradle/wrapper tools
+          cat > .gitignore <<'EOF_FILE'
+          .gradle/
+          build/
+          local.properties
+          .idea/
+          *.iml
+          EOF_FILE
+          cat > app/build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.mylauncher.gamer"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.mylauncher.gamer"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("androidx.recyclerview:recyclerview:1.3.2")
+          }
+          EOF_FILE
+          cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <!-- Permite ver las apps instaladas que tienen icono de lanzamiento -->
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:label="Mi Launcher"
+                  android:theme="@style/AppTheme">
+
+                  <!-- Siempre de costado -->
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="sensorLandscape"
+                      android:launchMode="singleTask"
+                      android:stateNotNeeded="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                      <!-- Permite usarlo como pantalla de inicio (launcher) -->
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.HOME" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_FILE
+          cat > app/src/main/java/com/mylauncher/gamer/MainActivity.kt <<'EOF_FILE'
+          package com.mylauncher.gamer
+
+          import android.content.Intent
+          import android.graphics.RenderEffect
+          import android.graphics.Shader
+          import android.media.MediaPlayer
+          import android.os.BatteryManager
+          import android.os.Build
+          import android.os.Bundle
+          import android.util.DisplayMetrics
+          import android.view.InputDevice
+          import android.view.KeyEvent
+          import android.view.LayoutInflater
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.ViewGroup
+          import android.widget.*
+          import androidx.activity.OnBackPressedCallback
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.appcompat.app.AlertDialog
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.core.view.WindowCompat
+          import androidx.core.view.WindowInsetsCompat
+          import androidx.core.view.WindowInsetsControllerCompat
+          import androidx.recyclerview.widget.LinearLayoutManager
+          import androidx.recyclerview.widget.LinearSmoothScroller
+          import androidx.recyclerview.widget.RecyclerView
+          import kotlin.math.abs
+
+          enum class Tab { RECENT, FAV, ALL }
+
+          class MainActivity : AppCompatActivity() {
+
+              private lateinit var games: MutableList<Game>
+              private var tab = Tab.RECENT
+              private var sel = 0
+              private var pendingPkg: String? = null
+              private var pendingName = ""
+              private var hatHeld = 0
+
+              private lateinit var rv: RecyclerView
+              private lateinit var lm: LinearLayoutManager
+              private lateinit var adapter: GameAdapter
+              private lateinit var bgCover: ImageView
+              private lateinit var tvName: TextView
+              private lateinit var btnPlay: TextView
+              private lateinit var btnFav: TextView
+              private lateinit var btnCover: TextView
+              private lateinit var btnDel: TextView
+              private lateinit var battery: TextView
+
+              private val pickCover = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+                  val pkg = pendingPkg
+                  pendingPkg = null
+                  if (pkg == null || uri == null) return@registerForActivityResult
+                  val path = Store.saveCover(this, uri, pkg)
+                  if (path == null) { toast("No se pudo leer la imagen"); return@registerForActivityResult }
+                  val ex = games.find { it.pkg == pkg }
+                  if (ex != null) { Store.deleteFile(ex.cover); ex.cover = path }
+                  else games.add(Game(pkg, pendingName, path, false, System.currentTimeMillis()))
+                  Store.save(this, games)
+                  tab = Tab.RECENT; sel = 0
+                  styleTabs(); refresh()
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_main)
+                  immersive()
+                  games = Store.load(this)
+                  if (savedInstanceState == null) playStartup()
+                  val btnSound = findViewById<TextView>(R.id.btnSound)
+                  btnSound.alpha = if (soundOn()) 1f else 0.35f
+                  btnSound.setOnClickListener {
+                      val on = !soundOn()
+                      getSharedPreferences("cfg", 0).edit().putBoolean("sound", on).apply()
+                      btnSound.alpha = if (on) 1f else 0.35f
+                      if (on) playStartup()
+                  }
+
+                  bgCover = findViewById(R.id.bgCover)
+                  tvName = findViewById(R.id.tvName)
+                  btnPlay = findViewById(R.id.btnPlay)
+                  btnFav = findViewById(R.id.btnFav)
+                  btnCover = findViewById(R.id.btnCover)
+                  btnDel = findViewById(R.id.btnDel)
+                  battery = findViewById(R.id.battery)
+                  rv = findViewById(R.id.rv)
+
+                  if (Build.VERSION.SDK_INT >= 31) {
+                      bgCover.setRenderEffect(RenderEffect.createBlurEffect(40f, 40f, Shader.TileMode.CLAMP))
+                  }
+
+                  lm = LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
+                  adapter = GameAdapter { pos -> onCardClick(pos) }
+                  rv.layoutManager = lm
+                  rv.adapter = adapter
+                  rv.itemAnimator = null
+                  rv.post {
+                      val pad = (rv.width - dp(121)) / 2
+                      rv.setPadding(pad, 0, pad, 0)
+                      refresh()
+                  }
+                  rv.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+                      override fun onScrollStateChanged(r: RecyclerView, state: Int) {
+                          if (state != RecyclerView.SCROLL_STATE_IDLE) return
+                          val c = r.width / 2
+                          var best = -1; var bd = Int.MAX_VALUE
+                          for (i in 0 until r.childCount) {
+                              val v = r.getChildAt(i)
+                              val d = abs((v.left + v.right) / 2 - c)
+                              if (d < bd) { bd = d; best = r.getChildAdapterPosition(v) }
+                          }
+                          if (best >= 0 && best != sel) select(best)
+                          else if (best >= 0 && bd > 4) centerOn(best)
+                      }
+                  })
+
+                  findViewById<View>(R.id.tabRecent).setOnClickListener { setTab(Tab.RECENT) }
+                  findViewById<View>(R.id.tabFav).setOnClickListener { setTab(Tab.FAV) }
+                  findViewById<View>(R.id.tabAll).setOnClickListener { setTab(Tab.ALL) }
+                  btnPlay.setOnClickListener { current()?.let { launch(it) } }
+                  btnFav.setOnClickListener {
+                      current()?.let { it.fav = !it.fav; Store.save(this, games); if (tab == Tab.FAV) refresh() else updateInfo() }
+                  }
+                  btnCover.setOnClickListener {
+                      current()?.let { pendingPkg = it.pkg; pendingName = it.name; pickCover.launch("image/*") }
+                  }
+                  btnDel.setOnClickListener { current()?.let { confirmDelete(it) } }
+
+                  // Como launcher: el boton Atras no hace nada
+                  onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+                      override fun handleOnBackPressed() {}
+                  })
+                  styleTabs()
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
+                  battery.text = "▮ ${bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)}%"
+                  if (::adapter.isInitialized) refresh()
+              }
+
+              override fun onNewIntent(intent: Intent) {
+                  super.onNewIntent(intent)
+                  if (intent.action == Intent.ACTION_MAIN) { sel = 0; refresh() }  // boton Inicio
+              }
+
+              override fun onWindowFocusChanged(hasFocus: Boolean) {
+                  super.onWindowFocusChanged(hasFocus)
+                  if (hasFocus) immersive()
+              }
+
+              private fun immersive() {
+                  WindowCompat.setDecorFitsSystemWindows(window, false)
+                  WindowInsetsControllerCompat(window, window.decorView).apply {
+                      hide(WindowInsetsCompat.Type.systemBars())
+                      systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                  }
+              }
+
+              // ---------- Datos ----------
+              private fun visible(): List<Game> = when (tab) {
+                  Tab.FAV -> games.filter { it.fav }
+                  Tab.ALL -> games.sortedBy { it.name.lowercase() }
+                  Tab.RECENT -> games.sortedByDescending { it.last }
+              }
+
+              private fun current(): Game? = visible().getOrNull(sel)
+
+              private fun refresh() {
+                  val l = visible()
+                  sel = sel.coerceIn(0, l.size)
+                  adapter.items = l
+                  adapter.selected = sel
+                  adapter.notifyDataSetChanged()
+                  updateInfo()
+                  rv.post { centerOn(sel) }
+              }
+
+              private fun updateInfo() {
+                  val g = current()
+                  val has = g != null
+                  btnPlay.visibility = if (has) View.VISIBLE else View.GONE
+                  btnFav.visibility = if (has) View.VISIBLE else View.GONE
+                  btnCover.visibility = if (has) View.VISIBLE else View.GONE
+                  btnDel.visibility = if (has) View.VISIBLE else View.GONE
+                  if (g != null) {
+                      tvName.text = g.name
+                      btnFav.text = if (g.fav) "★ Quitar favorito" else "☆ Favorito"
+                      bgCover.setImageBitmap(Store.bitmap(g.cover))
+                  } else {
+                      tvName.text = if (tab == Tab.FAV) "Aún no tienes favoritos" else "Pulsa + para agregar un juego"
+                      bgCover.setImageBitmap(null)
+                  }
+              }
+
+              // ---------- Seleccion / movimiento ----------
+              private fun select(p: Int, center: Boolean = true) {
+                  val old = sel
+                  sel = p.coerceIn(0, visible().size)
+                  adapter.selected = sel
+                  if (old < adapter.itemCount) adapter.notifyItemChanged(old)
+                  adapter.notifyItemChanged(sel)
+                  updateInfo()
+                  if (center) centerOn(sel)
+              }
+
+              private fun move(d: Int) = select(sel + d)
+
+              private fun centerOn(pos: Int) {
+                  if (pos < 0 || pos >= adapter.itemCount) return
+                  val s = object : LinearSmoothScroller(this) {
+                      override fun calculateDtToFit(vs: Int, ve: Int, bs: Int, be: Int, snap: Int) =
+                          (bs + (be - bs) / 2) - (vs + (ve - vs) / 2)
+                      override fun calculateSpeedPerPixel(m: DisplayMetrics) = 60f / m.densityDpi
+                  }
+                  s.targetPosition = pos
+                  lm.startSmoothScroll(s)
+              }
+
+              private fun onCardClick(pos: Int) {
+                  if (pos == RecyclerView.NO_POSITION) return
+                  if (pos != sel) select(pos) else activate()
+              }
+
+              private fun activate() {
+                  val g = current()
+                  if (g == null) pickInstalledApp() else launch(g)
+              }
+
+              private fun launch(g: Game) {
+                  val i = packageManager.getLaunchIntentForPackage(g.pkg)
+                  if (i == null) { toast("${g.name} ya no está instalado"); return }
+                  g.last = System.currentTimeMillis()
+                  Store.save(this, games)
+                  startActivity(i)
+              }
+
+              // ---------- Agregar / eliminar ----------
+              private fun pickInstalledApp() {
+                  val pm = packageManager
+                  val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                  val apps = pm.queryIntentActivities(intent, 0)
+                      .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+                      .filter { it.first != packageName && games.none { g -> g.pkg == it.first } }
+                      .distinctBy { it.first }
+                      .sortedBy { it.second.lowercase() }
+                  if (apps.isEmpty()) { toast("No hay más apps para agregar"); return }
+                  AlertDialog.Builder(this)
+                      .setTitle("Elige el juego instalado")
+                      .setItems(apps.map { it.second }.toTypedArray()) { _, w -> askName(apps[w].first, apps[w].second) }
+                      .setNegativeButton("Cancelar", null)
+                      .show()
+              }
+
+              private fun askName(pkg: String, label: String) {
+                  val et = EditText(this).apply { setText(label); setSelectAllOnFocus(true) }
+                  AlertDialog.Builder(this)
+                      .setTitle("Nombre del juego")
+                      .setView(et)
+                      .setPositiveButton("Elegir carátula") { _, _ ->
+                          pendingPkg = pkg
+                          pendingName = et.text.toString().ifBlank { label }
+                          pickCover.launch("image/*")
+                      }
+                      .setNegativeButton("Cancelar", null)
+                      .show()
+              }
+
+              private fun confirmDelete(g: Game) {
+                  AlertDialog.Builder(this)
+                      .setTitle("¿Quitar ${g.name} del launcher?")
+                      .setMessage("No se desinstala el juego.")
+                      .setPositiveButton("Quitar") { _, _ ->
+                          Store.deleteFile(g.cover)
+                          games.remove(g)
+                          Store.save(this, games)
+                          sel = (sel - 1).coerceAtLeast(0)
+                          refresh()
+                      }
+                      .setNegativeButton("Cancelar", null)
+                      .show()
+              }
+
+              // ---------- Pestanas ----------
+              private fun setTab(t: Tab) { tab = t; sel = 0; styleTabs(); refresh() }
+
+              private fun styleTabs() {
+                  val map = mapOf(R.id.tabRecent to Tab.RECENT, R.id.tabFav to Tab.FAV, R.id.tabAll to Tab.ALL)
+                  map.forEach { (id, t) ->
+                      findViewById<View>(id).setBackgroundResource(if (t == tab) R.drawable.tab_on else 0)
+                  }
+              }
+
+              // ---------- Control / teclado ----------
+              override fun onKeyDown(k: Int, e: KeyEvent): Boolean {
+                  when (k) {
+                      KeyEvent.KEYCODE_DPAD_RIGHT -> { move(1); return true }
+                      KeyEvent.KEYCODE_DPAD_LEFT -> { move(-1); return true }
+                      KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { activate(); return true }
+                  }
+                  return super.onKeyDown(k, e)
+              }
+
+              override fun onGenericMotionEvent(e: MotionEvent): Boolean {
+                  if ((e.source and InputDevice.SOURCE_JOYSTICK) != 0 && e.action == MotionEvent.ACTION_MOVE) {
+                      var x = e.getAxisValue(MotionEvent.AXIS_HAT_X)
+                      if (x == 0f) x = e.getAxisValue(MotionEvent.AXIS_X)
+                      val d = if (x > 0.6f) 1 else if (x < -0.6f) -1 else 0
+                      if (d != 0 && hatHeld == 0) move(d)
+                      hatHeld = d
+                      return true
+                  }
+                  return super.onGenericMotionEvent(e)
+              }
+
+              // ---------- Sonido de inicio ----------
+              private fun soundOn() = getSharedPreferences("cfg", 0).getBoolean("sound", true)
+
+              private fun playStartup() {
+                  if (!soundOn()) return
+                  try {
+                      val mp = MediaPlayer.create(this, R.raw.startup)
+                      mp?.setOnCompletionListener { it.release() }
+                      mp?.start()
+                  } catch (_: Exception) {}
+              }
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+              private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
+          }
+
+          class GameAdapter(private val onClick: (Int) -> Unit) : RecyclerView.Adapter<GameAdapter.VH>() {
+              var items: List<Game> = emptyList()
+              var selected = 0
+
+              class VH(v: View) : RecyclerView.ViewHolder(v) {
+                  val cover: ImageView = v.findViewById(R.id.cover)
+                  val add: TextView = v.findViewById(R.id.add)
+                  val name: TextView = v.findViewById(R.id.name)
+                  val border: View = v.findViewById(R.id.border)
+              }
+
+              override fun getItemCount() = items.size + 1
+              override fun onCreateViewHolder(p: ViewGroup, t: Int) =
+                  VH(LayoutInflater.from(p.context).inflate(R.layout.item_game, p, false))
+
+              override fun onBindViewHolder(h: VH, pos: Int) {
+                  val isAdd = pos == items.size
+                  if (isAdd) {
+                      h.add.visibility = View.VISIBLE; h.name.text = ""; h.cover.setImageBitmap(null)
+                  } else {
+                      val g = items[pos]
+                      h.add.visibility = View.GONE; h.name.text = g.name; h.cover.setImageBitmap(Store.bitmap(g.cover))
+                  }
+                  val on = pos == selected
+                  h.border.visibility = if (on) View.VISIBLE else View.GONE
+                  h.itemView.animate().scaleX(if (on) 1.15f else 1f).scaleY(if (on) 1.15f else 1f).setDuration(150).start()
+                  h.itemView.elevation = if (on) 12f else 0f
+                  h.itemView.setOnClickListener { onClick(h.bindingAdapterPosition) }
+              }
+          }
+          EOF_FILE
+          cat > app/src/main/java/com/mylauncher/gamer/ParticlesView.kt <<'EOF_FILE'
+          package com.mylauncher.gamer
+
+          import android.content.Context
+          import android.graphics.Canvas
+          import android.graphics.Color
+          import android.graphics.Paint
+          import android.util.AttributeSet
+          import android.view.View
+          import kotlin.random.Random
+
+          /** Particulas brillantes (cian y rojo) que flotan hacia arriba. */
+          class ParticlesView @JvmOverloads constructor(c: Context, a: AttributeSet? = null) : View(c, a) {
+              private class P(var x: Float, var y: Float, val r: Float, val v: Float, val col: Int, val alpha: Int)
+
+              private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+              private val density = resources.displayMetrics.density
+              private val ps = List(45) {
+                  P(Random.nextFloat(), Random.nextFloat(), Random.nextFloat() * 2f + 0.8f, Random.nextFloat() * 0.0035f + 0.001f,
+                      if (Random.nextFloat() < 0.65f) Color.rgb(25, 211, 255) else Color.rgb(255, 45, 85),
+                      (Random.nextFloat() * 150 + 70).toInt())
+              }
+
+              override fun onDraw(canvas: Canvas) {
+                  for (p in ps) {
+                      p.y -= p.v
+                      if (p.y < 0f) { p.y = 1f; p.x = Random.nextFloat() }
+                      paint.color = p.col
+                      paint.alpha = p.alpha / 4
+                      canvas.drawCircle(p.x * width, p.y * height, p.r * density * 3f, paint)
+                      paint.alpha = p.alpha
+                      canvas.drawCircle(p.x * width, p.y * height, p.r * density, paint)
+                  }
+                  postInvalidateOnAnimation()
+              }
+          }
+          EOF_FILE
+          cat > app/src/main/java/com/mylauncher/gamer/Store.kt <<'EOF_FILE'
+          package com.mylauncher.gamer
+
+          import android.content.Context
+          import android.graphics.*
+          import android.net.Uri
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.io.File
+          import java.io.FileOutputStream
+          import kotlin.math.max
+
+          data class Game(
+              val pkg: String,
+              var name: String,
+              var cover: String,
+              var fav: Boolean = false,
+              var last: Long = 0L
+          )
+
+          object Store {
+              private val cache = HashMap<String, Bitmap?>()
+
+              fun load(ctx: Context): MutableList<Game> {
+                  val out = mutableListOf<Game>()
+                  try {
+                      val arr = JSONArray(ctx.getSharedPreferences("games", 0).getString("list", "[]"))
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          out.add(Game(o.getString("pkg"), o.getString("name"), o.getString("cover"), o.optBoolean("fav"), o.optLong("last")))
+                      }
+                  } catch (_: Exception) {}
+                  return out
+              }
+
+              fun save(ctx: Context, list: List<Game>) {
+                  val arr = JSONArray()
+                  list.forEach {
+                      arr.put(JSONObject().put("pkg", it.pkg).put("name", it.name).put("cover", it.cover)
+                          .put("fav", it.fav).put("last", it.last))
+                  }
+                  ctx.getSharedPreferences("games", 0).edit().putString("list", arr.toString()).apply()
+              }
+
+              fun bitmap(path: String): Bitmap? = cache.getOrPut(path) { BitmapFactory.decodeFile(path) }
+
+              fun deleteFile(path: String) { cache.remove(path); File(path).delete() }
+
+              /** Recorta la imagen a formato vertical 2:3 y la guarda en el almacenamiento interno. */
+              fun saveCover(ctx: Context, uri: Uri, key: String): String? {
+                  val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                  ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+                  var s = 1
+                  while (bounds.outWidth / s > 1200) s *= 2
+                  val opts = BitmapFactory.Options().apply { inSampleSize = s }
+                  val src = ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: return null
+                  val w = 400; val h = 600
+                  val scale = max(w / src.width.toFloat(), h / src.height.toFloat())
+                  val m = Matrix().apply {
+                      postScale(scale, scale)
+                      postTranslate((w - src.width * scale) / 2f, (h - src.height * scale) / 2f)
+                  }
+                  val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                  Canvas(out).drawBitmap(src, m, Paint(Paint.FILTER_BITMAP_FLAG))
+                  val f = File(ctx.filesDir, "cover_${key}_${System.currentTimeMillis()}.jpg")
+                  FileOutputStream(f).use { out.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+                  return f.absolutePath
+              }
+          }
+          EOF_FILE
+          base64 -d > app/src/main/res/drawable-nodpi/ic_launcher_foreground.png <<'EOF_FILE'
+          iVBORw0KGgoAAAANSUhEUgAAAbAAAAGwCAMAAAD/kMAYAAADAFBMVEX////+///9///7/////v/+/v/7/v///f/8/f/9/P/8+v//
+          //7///3///z//v3+//3+/v7+/vz9//39/v36//3+/f39/f38/P35/f37+/36+P3///v///r///n+//r8//r//vr9/vr7/vr7/Pr6
+          +fr///j///T8/vX8/ff7+vf7+/H2/fr2+vv09/vt7/vo6vDi4/PZ4PPX2vHX2ufW1s7N1urN1NfMz93Az+QmzP8gzf4R0P4Rzf0Q
+          zP0Ry/0Ny/8Mzf0My/8My/0E0v0G0P4Gz/4Izv0Fzv0Jzf8KzfwHzf0LzP8KzP8Ly/8Ly/sJzPwFzPrCxue8xOe9vt+5vt+6vN66
+          vNm4vNm2wOG2vN2/w9e6vNe3vde9v9K3vdPHwJu6u9u4u9y1u9+3u9i4u9W5usu4uNuyuN21uNK2uMqztdS0r9GhrNWhpsmSqMBH
+          ucEryP4sw/stufUsqeiZnsKQnMOJkMGGjKl8hqpAkNIpk9cZyvwRyf4Qyf4Pyv8Pyf8Pyv0Myv8MyvsJyvsEyvsYyP0TyP4QyPwJ
+          yPoZxfwOxfkUwvgcmth5fKltdqRkcZZgcJlfbHxgbXhcbpFdbX1dbXxdbXqmSHVhaINdaIJXY5dWZXxPW4VNUoMgdbs6W4tFUIA8
+          TYM6Q3kzOXImNnImMXEjK30dJYAYJ4AYJIAlKmgeKGsZJ3MZJmYPX6kIQY4FMoQILH4SKIAFKH4RKHUGKHcTJYETJXwKJX0RJXkS
+          JXEKJXkHJXQUJIIRJIASI30RI3wSI3oQI3oSI3cTI3AOI34PI3wOI3sLJH0PI3oPJHYMJHcDI3UZInkUInoSInwSIngRIn4RInwR
+          InsRInoRIncQIn0QIngKInkjHXYbHnYZHnwZHm0XH3wYIHAYHHUVIH4VIHoVIHIVHHkVG2ISIYASIX0SIXwSIXoSIHESHn0SHnES
+          G2kSFmIQIXwPIXkPHnwMH3sGH3oNHnUEH3UOHmgHHmkNGXQNGWcFGW4OGF0JGF0JFGULFFUIEFoFC1aLcL7tAABkAElEQVR42u2d
+          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
+          EOF_FILE
+          cat > app/src/main/res/drawable/bg_shade.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+              <item><shape android:shape="rectangle">
+                  <gradient android:angle="315" android:startColor="#E60B1A2B" android:endColor="#8C0B1A2B"/>
+              </shape></item>
+              <item><shape android:shape="rectangle">
+                  <gradient android:type="radial" android:gradientRadius="520dp" android:centerX="0.1" android:centerY="0"
+                      android:startColor="#6019D3FF" android:endColor="#0019D3FF"/>
+              </shape></item>
+              <item><shape android:shape="rectangle">
+                  <gradient android:type="radial" android:gradientRadius="520dp" android:centerX="0.95" android:centerY="1"
+                      android:startColor="#66FF2D55" android:endColor="#00FF2D55"/>
+              </shape></item>
+          </layer-list>
+          EOF_FILE
+          cat > app/src/main/res/drawable/border_selected.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <stroke android:width="2.5dp" android:color="#19D3FF"/><corners android:radius="6dp"/>
+          </shape>
+          EOF_FILE
+          cat > app/src/main/res/drawable/btn_ghost.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#33FFFFFF"/><corners android:radius="16dp"/>
+          </shape>
+          EOF_FILE
+          cat > app/src/main/res/drawable/btn_play.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <gradient android:angle="0" android:startColor="#FF2D55" android:endColor="#FF6A3D"/>
+              <corners android:radius="5dp"/>
+          </shape>
+          EOF_FILE
+          cat > app/src/main/res/drawable/card_bg.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#14263B"/><corners android:radius="6dp"/>
+          </shape>
+          EOF_FILE
+          cat > app/src/main/res/drawable/tab_on.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#4019D3FF"/><corners android:radius="20dp"/>
+          </shape>
+          EOF_FILE
+          cat > app/src/main/res/layout/activity_main.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent" android:layout_height="match_parent"
+              android:background="#0B1A2B">
+
+              <ImageView android:id="@+id/bgCover" android:layout_width="match_parent" android:layout_height="match_parent"
+                  android:scaleType="centerCrop" android:alpha="0.55"/>
+              <View android:layout_width="match_parent" android:layout_height="match_parent"
+                  android:background="@drawable/bg_shade"/>
+              <com.mylauncher.gamer.ParticlesView android:layout_width="match_parent" android:layout_height="match_parent"/>
+
+              <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent"
+                  android:orientation="vertical" android:paddingStart="28dp" android:paddingEnd="28dp"
+                  android:paddingTop="10dp" android:paddingBottom="8dp">
+
+                  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                      android:orientation="horizontal" android:gravity="center_vertical">
+                      <TextView android:id="@+id/tabRecent" style="@style/Tab" android:text="RECIENTES"/>
+                      <TextView android:id="@+id/tabFav" style="@style/Tab" android:text="FAVORITOS"/>
+                      <TextView android:id="@+id/tabAll" style="@style/Tab" android:text="TODOS"/>
+                      <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1"/>
+                      <TextView android:id="@+id/btnSound" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                          android:padding="6dp" android:layout_marginEnd="10dp" android:text="♪"
+                          android:textColor="#19D3FF" android:textSize="20sp" android:textStyle="bold"/>
+                      <TextClock android:id="@+id/clock" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                          android:format12Hour="h:mm a" android:format24Hour="h:mm a"
+                          android:textColor="#FFFFFF" android:textSize="16sp" android:textStyle="bold"/>
+                      <TextView android:id="@+id/battery" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                          android:layout_marginStart="14dp" android:textColor="#19D3FF" android:textSize="14sp" android:textStyle="bold"/>
+                  </LinearLayout>
+
+                  <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                      android:layout_marginTop="6dp" android:orientation="horizontal" android:gravity="center_vertical">
+                      <View android:layout_width="4dp" android:layout_height="16dp" android:background="#FF2D55"/>
+                      <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                          android:layout_marginStart="8dp" android:text="JUEGOS RECIENTES"
+                          android:textColor="#FFFFFF" android:textSize="14sp" android:textStyle="bold"
+                          android:letterSpacing="0.2" android:fontFamily="sans-serif-condensed"/>
+                  </LinearLayout>
+
+                  <androidx.recyclerview.widget.RecyclerView android:id="@+id/rv"
+                      android:layout_width="match_parent" android:layout_height="190dp"
+                      android:clipToPadding="false" android:clipChildren="false"/>
+
+                  <TextView android:id="@+id/tvName" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                      android:textColor="#FFFFFF" android:textSize="20sp" android:textStyle="bold"
+                      android:fontFamily="sans-serif-condensed" android:shadowColor="#19D3FF" android:shadowRadius="14"/>
+
+                  <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                      android:layout_marginTop="4dp" android:orientation="horizontal" android:gravity="center_vertical">
+                      <TextView android:id="@+id/btnPlay" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                          android:background="@drawable/btn_play" android:paddingStart="22dp" android:paddingEnd="22dp"
+                          android:paddingTop="8dp" android:paddingBottom="8dp" android:text="▶  ¡JUGAR AHORA!"
+                          android:textColor="#FFFFFF" android:textStyle="bold" android:textSize="15sp" android:letterSpacing="0.08"/>
+                      <TextView android:id="@+id/btnFav" style="@style/Ghost" android:text="☆ Favorito"/>
+                      <TextView android:id="@+id/btnCover" style="@style/Ghost" android:text="Carátula"/>
+                      <TextView android:id="@+id/btnDel" style="@style/Ghost" android:text="Eliminar"/>
+                  </LinearLayout>
+              </LinearLayout>
+          </FrameLayout>
+          EOF_FILE
+          cat > app/src/main/res/layout/item_game.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="105dp" android:layout_height="158dp"
+              android:layout_margin="8dp">
+              <ImageView android:id="@+id/cover" android:layout_width="match_parent" android:layout_height="match_parent"
+                  android:scaleType="centerCrop" android:background="@drawable/card_bg" android:clipToOutline="true"/>
+              <TextView android:id="@+id/add" android:layout_width="match_parent" android:layout_height="match_parent"
+                  android:gravity="center" android:text="+" android:textColor="#FFFFFF" android:textSize="40sp"
+                  android:visibility="gone"/>
+              <TextView android:id="@+id/name" android:layout_width="match_parent" android:layout_height="wrap_content"
+                  android:layout_gravity="bottom" android:gravity="center" android:padding="6dp"
+                  android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold"
+                  android:shadowColor="#000000" android:shadowRadius="6" android:shadowDx="0" android:shadowDy="1"/>
+              <View android:id="@+id/border" android:layout_width="match_parent" android:layout_height="match_parent"
+                  android:background="@drawable/border_selected" android:visibility="gone"/>
+          </FrameLayout>
+          EOF_FILE
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background"/>
+              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+          </adaptive-icon>
+          EOF_FILE
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background"/>
+              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+          </adaptive-icon>
+          EOF_FILE
+          cat > app/src/main/res/values-v28/themes.xml <<'EOF_FILE'
+          <resources>
+              <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
+                  <item name="android:windowBackground">#0B1A2B</item>
+                  <item name="android:statusBarColor">@android:color/transparent</item>
+                  <item name="android:navigationBarColor">@android:color/transparent</item>
+                  <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+              </style>
+          </resources>
+          EOF_FILE
+          cat > app/src/main/res/values/ic_launcher_background.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#11227C</color>
+          </resources>
+          EOF_FILE
+          cat > app/src/main/res/values/styles.xml <<'EOF_FILE'
+          <resources>
+              <style name="Tab">
+                  <item name="android:layout_width">wrap_content</item>
+                  <item name="android:layout_height">wrap_content</item>
+                  <item name="android:paddingStart">14dp</item>
+                  <item name="android:paddingEnd">14dp</item>
+                  <item name="android:paddingTop">6dp</item>
+                  <item name="android:paddingBottom">6dp</item>
+                  <item name="android:textColor">#FFFFFF</item>
+                  <item name="android:textSize">12sp</item>
+                  <item name="android:textStyle">bold</item>
+                  <item name="android:letterSpacing">0.1</item>
+              </style>
+              <style name="Ghost">
+                  <item name="android:layout_width">wrap_content</item>
+                  <item name="android:layout_height">wrap_content</item>
+                  <item name="android:layout_marginStart">10dp</item>
+                  <item name="android:background">@drawable/btn_ghost</item>
+                  <item name="android:paddingStart">12dp</item>
+                  <item name="android:paddingEnd">12dp</item>
+                  <item name="android:paddingTop">6dp</item>
+                  <item name="android:paddingBottom">6dp</item>
+                  <item name="android:textColor">#FFFFFF</item>
+                  <item name="android:textSize">12sp</item>
+              </style>
+          </resources>
+          EOF_FILE
+          cat > app/src/main/res/values/themes.xml <<'EOF_FILE'
+          <resources>
+              <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
+                  <item name="android:windowBackground">#0B1A2B</item>
+                  <item name="android:statusBarColor">@android:color/transparent</item>
+                  <item name="android:navigationBarColor">@android:color/transparent</item>
+              </style>
+          </resources>
+          EOF_FILE
+          cat > build.gradle.kts <<'EOF_FILE'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF_FILE
+          cat > gradle.properties <<'EOF_FILE'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF_FILE
+          cat > gradle/wrapper/gradle-wrapper.properties <<'EOF_FILE'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.7-bin.zip
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF_FILE
+          cat > settings.gradle.kts <<'EOF_FILE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "MiLauncher"
+          include(":app")
+          EOF_FILE
+          cat > tools/make_startup_sound.py <<'EOF_FILE'
+          import wave, math, struct, os, sys
+          SR = 22050
+          DUR = 5.0
+          N = int(SR * DUR)
+          buf = [0.0] * N
+          TAU = 2 * math.pi
+
+          # Acorde etereo (Re mayor add9) que crece lento
+          voices = [(73.42, 0.0, 0.30), (110.0, 0.15, 0.26), (146.83, 0.30, 0.22), (185.0, 0.45, 0.18),
+                    (220.0, 0.60, 0.16), (293.66, 0.80, 0.12), (329.63, 1.00, 0.10), (440.0, 1.20, 0.08)]
+          for f, st, amp in voices:
+              for i in range(int(st * SR), N):
+                  t = i / SR - st
+                  e = min(1.0, t / 1.5) * math.exp(-max(0.0, t - 1.9) * 0.6)
+                  v = (math.sin(TAU * f * t) + 0.5 * math.sin(TAU * f * 1.003 * t)
+                       + 0.30 * math.sin(TAU * f * 2 * t + 0.4) + 0.12 * math.sin(TAU * f * 3 * t))
+                  buf[i] += amp * e * v
+
+          # Destellos tipo campana
+          for f, st in [(1174.66, 1.55), (1479.98, 1.85), (1760.0, 2.15), (2349.3, 2.45)]:
+              for i in range(int(st * SR), N):
+                  t = i / SR - st
+                  e = math.exp(-t * 2.6) * min(1.0, t / 0.01)
+                  v = math.sin(TAU * f * t) + 0.4 * math.sin(TAU * f * 2.76 * t)
+                  buf[i] += 0.07 * e * v
+
+          # Reverb simple (peines)
+          wet = [0.0] * N
+          for d, g in [(0.0297, 0.72), (0.0371, 0.70), (0.0411, 0.68), (0.0437, 0.66)]:
+              D = int(d * SR)
+              line = [0.0] * N
+              for i in range(N):
+                  x = buf[i] + (line[i - D] * g if i >= D else 0.0)
+                  line[i] = x
+                  wet[i] += x * 0.22
+          out = [buf[i] * 0.6 + wet[i] for i in range(N)]
+
+          # Fundido final + normalizar
+          fade = int(0.7 * SR)
+          for i in range(fade):
+              out[N - 1 - i] *= i / fade
+          peak = max(abs(x) for x in out) or 1.0
+          out = [x / peak * 0.85 for x in out]
+
+          path = sys.argv[1] if len(sys.argv) > 1 else "startup.wav"
+          os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+          with wave.open(path, "wb") as w:
+              w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
+              w.writeframes(b"".join(struct.pack("<h", int(x * 32767)) for x in out))
+          print("Sonido creado:", path)
+          EOF_FILE
+
+      - name: Generar sonido de inicio
+        run: python3 tools/make_startup_sound.py app/src/main/res/raw/startup.wav
+
+      - name: Instalar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Instalar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Compilar APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Guardar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiLauncher-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
